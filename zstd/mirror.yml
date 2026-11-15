@@ -1,0 +1,140 @@
+## mirror-meta — the single spec for ocx.sh/meta/zstd.
+##
+## No mirror-base.yml and no `extends:`: one package, every key is package-owned
+## (same shape as mirror-gohugoio / mirror-astral-sh). `extends:` is a SHALLOW
+## merge, so a single file removes the "restated platforms: drops containers:"
+## trap structurally.
+
+name: zstd
+
+# Logical index package `meta/zstd` at the physical path
+# `ghcr.io/ocx-contrib/meta/zstd` — slash segments, owner-first.
+#
+# Namespace rule 3 (vendor identity beats the org handle): upstream is
+# https://github.com/meta/zstd, formerly facebook/zstd; `meta` is the GitHub org
+# that owns it today (`gh api repos/meta/zstd --jq .full_name` -> meta/zstd).
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/meta/zstd
+
+source:
+  type: github_release
+  owner: meta
+  repo: zstd
+  # Only `vX.Y.Z` tags carry the win64 zip. The odd legacy tags (`zstd-0.4.2`,
+  # `v0.1.1`, ...) are anchored out. There is no v1.5.3 release upstream.
+  tag_pattern: "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+skip_prereleases: true
+cascade: true
+
+# Bare semver, no `+build` segment, so `date` cannot collide with upstream build
+# metadata. A re-published cascade tag would otherwise orphan the prior digest.
+build_timestamp: date
+
+# GitHub declares `digest: null` for every in-range win64 asset (measured on
+# 1.5.5, 1.5.6, 1.5.7), so `if_present` (true) verifies nothing for them; it is
+# kept so a future release that does carry a digest is checked automatically.
+verify:
+  github_asset_digest: true
+
+concurrency:
+  max_downloads: 4
+  max_bundles: 2
+  max_pushes: 2
+  rate_limit_ms: 100
+  max_retries: 3
+  compression_threads: 0
+
+# `off`, and it cannot be otherwise. The archive wraps everything in a
+# per-version directory (`zstd-v1.5.7-win64/`), so the only version-independent
+# layout is strip_components: 1 with the executable at the content root. PATH is
+# then a bare ${installPath}, which `auto`/`verify` reject at spec load (exit 65;
+# no scan target). Keeping the wrapper (strip_components: 0) would need a PATH of
+# `${installPath}/zstd-v1.5.7-win64`, which changes with every release.
+# `off` plus a hand-listed `binaries` is the blessed shape; the list is one
+# entry and the smoke test proves `zstd.exe` resolves on the composed PATH.
+bin_scan: off
+
+# ─── SCOPE: WINDOWS ONLY — linux and darwin are NOT mirrored ────────────────
+#
+# Upstream publishes binaries for Windows only. Every release carries the
+# source tarballs (zstd-<V>.tar.gz / .tar.zst, plus .sha256/.sig sidecars) and
+# the Windows zips; there is no linux or darwin binary on any release, ever.
+# Owner/orchestrator decision (2026-11-15): publish what upstream ships, do not
+# build from source, and do not re-host binaries from third-party distributors.
+# Linux and macOS users get zstd from their system package manager.
+#
+#   $ gh api repos/meta/zstd/releases/tags/v1.5.7 --jq '.assets[].name'
+#     zstd-1.5.7.tar.gz  zstd-1.5.7.tar.gz.sha256  zstd-1.5.7.tar.gz.sig
+#     zstd-1.5.7.tar.zst zstd-1.5.7.tar.zst.sha256 zstd-1.5.7.tar.zst.sig
+#     zstd-v1.5.7-win32.zip  zstd-v1.5.7-win64.zip
+#
+# win32 (x86) is not mirrored: it is not a fleet platform and no consumer
+# resolves onto it. windows/arm64: upstream ships none (re-listed above, not
+# assumed). No libc gate applies — the only artifact is a PE binary:
+#
+#   $ file zstd-v1.5.7-win64/zstd.exe
+#     PE32+ executable for MS Windows 5.02 (console), x86-64, 19 sections
+#     (1.5.5 / 1.5.6: identical, 20 sections)
+#
+# ─── Asset pattern and the version floor ────────────────────────────────────
+#
+# `^zstd-v<V>-win64\.zip$` matches exactly one asset on the newest (1.5.7) and
+# the oldest in-range (1.5.5) release; `-win32.zip` is anchored out.
+#
+# versions.min is 1.5.5 because the archive LAYOUT is not stable below it, and
+# per-version layout changes are not expressible (a floor bump is the fix).
+# Top level of the win64 zip, measured per release:
+#
+#   wrapper dir `zstd-v<V>-win64/` (zstd.exe inside) : 1.5.7 1.5.6 1.5.5
+#                                                      1.5.2 1.5.0 1.4.3-1.4.1
+#   flat (dll/ example/ include/ README.md zstd.exe) : 1.5.4 1.4.9-1.4.4 1.4.0
+#                                                      1.3.x ...
+#   zstd.exe alone                                   : 1.5.1 1.3.1
+#
+# Releases 1.5.5-1.5.7 are the contiguous run with the wrapper layout.
+# Executables in the archive: `zstd.exe` only (no zstdmt/pzstd/zstdcat in the
+# win64 zips of this range; 1.1.4 shipped zstdmt.exe, out of range).
+assets:
+  windows/amd64:
+    - "^zstd-v\\d+\\.\\d+\\.\\d+-win64\\.zip$"
+
+asset_type:
+  type: archive
+  strip_components: 1
+
+metadata:
+  default: metadata.json
+
+catalog:
+  logo: logo.svg
+
+versions:
+  min: "1.5.5"
+  new_per_run: 10
+  poll_interval: "28 3-23/6 * * *"
+
+tests:
+  - name: smoke
+    script: zstd/tests/smoke.star
+
+# Dual-licensed BSD-3-Clause OR GPL-2.0-only; redistributed under the BSD option.
+annotations:
+  org.opencontainers.image.licenses: "BSD-3-Clause"
+
+# Windows has a single libc family and no Linux container engine, so no
+# `containers:` here (rejected at spec load on non-Linux platforms).
+platforms:
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"  # pinged in-message on failures
+
+announce:
+  package: meta/zstd
+  fork: ocx-contrib/index
